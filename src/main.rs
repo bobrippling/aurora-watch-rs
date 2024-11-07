@@ -1,12 +1,21 @@
 #![allow(dead_code)]
 
-use std::error::Error;
-
 use reqwest::blocking::get;
 use serde::Deserialize;
 use log::debug;
+use thiserror::Error;
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type Result = std::result::Result<(), Error>;
+
+#[derive(Error, Debug)]
+enum Error {
+    #[error("request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    #[error("deserialisation failed: {0}")]
+    Serde(#[from] serde_xml_rs::Error),
+    #[error("connect failed")]
+    Connect,
+}
 
 fn main() -> Result {
     env_logger::init();
@@ -146,8 +155,24 @@ fn v2_descriptions() -> ! {
     todo!()
 }
 
-fn fetch_xml<'de, T: Deserialize<'de>>(url: &str) -> std::result::Result<T, Box<dyn Error>> {
-    let response = get(url)?.text()?;
+fn fetch_xml<'de, T: Deserialize<'de>>(url: &str) -> std::result::Result<T, Error> {
+    let response = get_text(url)
+        .map_err(|e| {
+            use std::error::Error;
+            if let Some(src) = e.source() {
+                if let Some(src) = src.downcast_ref::<hyper::Error>() {
+                    if src.is_connect() || src.is_timeout() {
+                        return crate::Error::Connect
+                    }
+                }
+            }
+            crate::Error::Request(e)
+        })?;
+
     let watch: T = serde_xml_rs::from_str(&response)?;
     Ok(watch)
+}
+
+fn get_text(url: &str) -> std::result::Result<String, reqwest::Error> {
+    get(url)?.text()
 }
